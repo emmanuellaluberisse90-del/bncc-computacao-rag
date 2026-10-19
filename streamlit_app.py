@@ -1,53 +1,104 @@
-import streamlit as st
-from openai import OpenAI
 
-# Show title and description.
-st.title("📄 Document question answering")
-st.write(
-    "Upload a document below and ask a question about it – GPT will answer! "
-    "To use this app, you need to provide an OpenAI API key, which you can get [here](https://platform.openai.com/account/api-keys). "
+import streamlit as st
+import google.generativeai as genai
+from pinecone import Pinecone
+
+st.set_page_config(
+    page_title="BNCC Computação | RAG",
+    page_icon="📚",
+    layout="wide"
 )
 
-# Ask user for their OpenAI API key via `st.text_input`.
-# Alternatively, you can store the API key in `./.streamlit/secrets.toml` and access it
-# via `st.secrets`, see https://docs.streamlit.io/develop/concepts/connections/secrets-management
-openai_api_key = st.text_input("OpenAI API Key", type="password")
-if not openai_api_key:
-    st.info("Please add your OpenAI API key to continue.", icon="🗝️")
-else:
+st.title("📚 BNCC Computação")
+st.subheader("Assistente de perguntas e respostas sobre documentos")
 
-    # Create an OpenAI client.
-    client = OpenAI(api_key=openai_api_key)
+st.write(
+    "Faça uma pergunta sobre o documento da BNCC Computação. "
+    "As respostas são baseadas nos trechos recuperados do documento."
+)
 
-    # Let the user upload a file via `st.file_uploader`.
-    uploaded_file = st.file_uploader(
-        "Upload a document (.txt or .md)", type=("txt", "md")
-    )
+with st.sidebar:
+    st.header("⚙️ Configuração")
+    st.write("Assistente de pesquisa com RAG")
+    st.caption("Gemini + Pinecone")
 
-    # Ask the user for a question via `st.text_area`.
-    question = st.text_area(
-        "Now ask a question about the document!",
-        placeholder="Can you give me a short summary?",
-        disabled=not uploaded_file,
-    )
+if "GEMINI_API_KEY" not in st.secrets:
+    st.error("Configure GEMINI_API_KEY nos Secrets do Streamlit.")
+    st.stop()
 
-    if uploaded_file and question:
+if "PINECONE_API_KEY" not in st.secrets:
+    st.error("Configure PINECONE_API_KEY nos Secrets do Streamlit.")
+    st.stop()
 
-        # Process the uploaded file and question.
-        document = uploaded_file.read().decode()
-        messages = [
-            {
-                "role": "user",
-                "content": f"Here's a document: {document} \n\n---\n\n {question}",
-            }
-        ]
+if "PINECONE_INDEX_NAME" not in st.secrets:
+    st.error("Configure PINECONE_INDEX_NAME nos Secrets do Streamlit.")
+    st.stop()
 
-        # Generate an answer using the OpenAI API.
-        stream = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=messages,
-            stream=True,
-        )
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 
-        # Stream the response to the app using `st.write_stream`.
-        st.write_stream(stream)
+pc = Pinecone(api_key=st.secrets["PINECONE_API_KEY"])
+index = pc.Index(st.secrets["PINECONE_INDEX_NAME"])
+
+pergunta = st.text_area(
+    "Digite sua pergunta:",
+    placeholder="Quais são as habilidades do primeiro ano?",
+    height=100
+)
+
+if st.button("Buscar resposta", type="primary"):
+    if not pergunta.strip():
+        st.warning("Digite uma pergunta antes de continuar.")
+    else:
+        with st.spinner("Pesquisando o documento..."):
+            resultado = genai.embed_content(
+                model="models/gemini-embedding-001",
+                content=pergunta,
+                task_type="retrieval_query"
+            )
+
+            query_embedding = resultado["embedding"]
+
+            busca = index.query(
+                vector=query_embedding,
+                top_k=3,
+                include_metadata=True
+            )
+
+            matches = busca.get("matches", [])
+
+            if not matches:
+                st.warning("Não encontrei informações relevantes no documento.")
+            else:
+                trechos = [
+                    match["metadata"]["texto_original"]
+                    for match in matches
+                    if match.get("metadata", {}).get("texto_original")
+                ]
+
+                contexto = "\n\n".join(trechos)
+
+                if not contexto:
+                    st.warning("Os resultados não contêm texto para responder.")
+                else:
+                    prompt = f"""
+Responda em português usando somente as informações do contexto.
+Se a resposta não estiver no contexto, diga:
+"Informação indisponível no contexto."
+
+Contexto:
+{contexto}
+
+Pergunta:
+{pergunta}
+"""
+
+                    modelo = genai.GenerativeModel("gemini-3.6-flash")
+                    resposta = modelo.generate_content(prompt)
+
+                    st.markdown("### 💡 Resposta")
+                    st.write(resposta.text)
+
+                    with st.expander("📄 Consultar trechos recuperados"):
+                        for i, trecho in enumerate(trechos, start=1):
+                            st.markdown(f"**Trecho {i}**")
+                            st.write(trecho)
