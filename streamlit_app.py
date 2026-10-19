@@ -34,7 +34,13 @@ if "PINECONE_INDEX_NAME" not in st.secrets:
     st.error("Configure PINECONE_INDEX_NAME nos Secrets do Streamlit.")
     st.stop()
 
-genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+gemini_key = "".join(
+    st.secrets["GEMINI_API_KEY"]
+    .replace("\ufeff", "")
+    .split()
+)
+
+genai.configure(api_key=gemini_key)
 
 pc = Pinecone(api_key=st.secrets["PINECONE_API_KEY"])
 index = pc.Index(st.secrets["PINECONE_INDEX_NAME"])
